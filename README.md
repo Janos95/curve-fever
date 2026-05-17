@@ -15,3 +15,13 @@ Build it locally with:
 ```
 
 If the Emscripten SDK is not at `/Users/janosmeny/Projects/emsdk`, set `EMSDK_DIR` before running the script.
+
+## Atari action pretraining
+
+`experiments/train_atari_act_tinygrad.py` ports the reference PyTorch Atari action-chunk model from `../WorldModel` to tinygrad/WebGPU. It defaults to the stratified Atari-HEAD sample split and writes local checkpoints under ignored `runs/`.
+
+```bash
+.venv/bin/python experiments/train_atari_act_tinygrad.py
+```
+
+Reference PyTorch checkpoint on `../WorldModel/data/atari-act-stratified`: `43.12%` token accuracy, `77.27%` top-3 accuracy. The tinygrad/WebGPU 3-epoch run reached `42.75%` token accuracy and `77.04%` top-3 accuracy.
