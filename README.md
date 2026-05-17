@@ -6,6 +6,8 @@ This project explores building an agent that learns to play Curve Fever through 
 
 The browser demo keeps game logic and rendering in C++/WGSL, compiled to WebAssembly with Emscripten's Dawn WebGPU port. The page shell only forwards keyboard, pointer, and reset input.
 
+Shared simulation structs, WebGPU helpers, and shader sources live in `cpp/curve_engine.hpp` and `cpp/curve_shaders.hpp`. The web demo, native frame demo, and native benchmark are intentionally thin runners over those shared pieces.
+
 Build it locally with:
 
 ```bash

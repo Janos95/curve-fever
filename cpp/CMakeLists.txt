@@ -7,9 +7,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(DAWN_ROOT "/Users/janosmeny/Projects/dawn-7069" CACHE PATH "Path to the local Dawn checkout")
 set(DAWN_BUILD_DIR "${DAWN_ROOT}/out/Release" CACHE PATH "Path to the local Dawn build directory")
 
+add_library(curve_engine INTERFACE)
+target_include_directories(curve_engine INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_sources(curve_engine INTERFACE
+  curve_engine.hpp
+  curve_shaders.hpp
+)
+
 if(EMSCRIPTEN)
 add_executable(curve_web
   curve_webgpu_web.cpp
+)
+
+target_link_libraries(curve_web PRIVATE
+  curve_engine
 )
 
 set_target_properties(curve_web PROPERTIES
@@ -59,10 +70,12 @@ target_include_directories(curve_webgpu_benchmark PRIVATE
 )
 
 target_link_libraries(curve_webgpu_demo PRIVATE
+  curve_engine
   "${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.dylib"
 )
 
 target_link_libraries(curve_webgpu_benchmark PRIVATE
+  curve_engine
   "${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.dylib"
 )
 
