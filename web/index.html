@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Curve Fever WebGPU</title>
+  <title>Curve Fever WebGPU 70%</title>
   <style>
     :root {
       color-scheme: dark;
@@ -139,7 +139,7 @@
 <body>
   <main>
     <div class="topbar">
-      <h1>Curve Fever</h1>
+      <h1>Curve Fever 70%</h1>
       <div class="status" id="status">Loading WebGPU</div>
     </div>
 
@@ -163,6 +163,7 @@
     const rightButton = document.getElementById("right");
     const resetButton = document.getElementById("reset");
     const pressedKeys = new Set();
+    const BUILD_ID = "speed70-cache2";
 
     function call(name, args = []) {
       if (!window.Module || typeof window.Module.ccall !== "function") {
@@ -233,7 +234,7 @@
     });
 
     window.curveFeverReady = () => {
-      statusEl.textContent = "Ready";
+      statusEl.textContent = "Ready 70%";
     };
 
     if (!navigator.gpu) {
@@ -242,6 +243,12 @@
 
     window.Module = {
       canvas,
+      locateFile(path, prefix) {
+        if (path.endsWith(".wasm")) {
+          return `${prefix}${path}?v=${BUILD_ID}`;
+        }
+        return `${prefix}${path}`;
+      },
       print(text) {
         console.log(text);
       },
@@ -251,6 +258,6 @@
       },
     };
   </script>
-  <script src="./curve_web.js"></script>
+  <script src="./curve_web.js?v=speed70-cache2"></script>
 </body>
 </html>
