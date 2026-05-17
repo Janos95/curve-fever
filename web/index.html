@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Curve Fever WebGPU</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0a08;
+      --panel: #17130f;
+      --line: #3c3329;
+      --text: #f6efe3;
+      --muted: #b7a996;
+      --accent: #3cdcff;
+      --danger: #ff6856;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      min-height: 100%;
+      background:
+        linear-gradient(180deg, rgba(60, 220, 255, 0.08), transparent 36%),
+        var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(100vw, 760px);
+      padding: 18px;
+    }
+
+    .topbar,
+    .controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .topbar {
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.35rem, 2.6vw, 2.1rem);
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .status {
+      min-width: 7.5rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: right;
+    }
+
+    .stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      max-height: calc(100vh - 150px);
+      border: 1px solid var(--line);
+      background: #12100c;
+      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    .controls {
+      margin-top: 12px;
+    }
+
+    .turns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(72px, 1fr));
+      gap: 10px;
+      width: min(100%, 180px);
+    }
+
+    button {
+      min-height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      font-weight: 720;
+      cursor: pointer;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+    }
+
+    button:active,
+    button[data-pressed="true"] {
+      background: #103540;
+      border-color: var(--accent);
+      color: white;
+    }
+
+    #reset {
+      min-width: 92px;
+    }
+
+    @media (max-width: 560px) {
+      main {
+        padding: 12px;
+      }
+
+      .stage {
+        max-height: calc(100vh - 138px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <h1>Curve Fever</h1>
+      <div class="status" id="status">Loading WebGPU</div>
+    </div>
+
+    <div class="stage">
+      <canvas id="canvas" width="512" height="512"></canvas>
+    </div>
+
+    <div class="controls">
+      <div class="turns" aria-label="Turn controls">
+        <button id="left" type="button" aria-label="Turn left">&lt;</button>
+        <button id="right" type="button" aria-label="Turn right">&gt;</button>
+      </div>
+      <button id="reset" type="button">Reset</button>
+    </div>
+  </main>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const statusEl = document.getElementById("status");
+    const leftButton = document.getElementById("left");
+    const rightButton = document.getElementById("right");
+    const resetButton = document.getElementById("reset");
+    const pressedKeys = new Set();
+
+    function call(name, args = []) {
+      if (!window.Module || typeof window.Module.ccall !== "function") {
+        return;
+      }
+      window.Module.ccall(name, null, args.map(() => "number"), args);
+    }
+
+    function setTurn(turn) {
+      call("curve_set_turn", [turn]);
+    }
+
+    function syncTurn() {
+      const left = pressedKeys.has("ArrowLeft") || pressedKeys.has("KeyA");
+      const right = pressedKeys.has("ArrowRight") || pressedKeys.has("KeyD");
+      setTurn(left === right ? 0 : left ? -1 : 1);
+      leftButton.dataset.pressed = String(left && !right);
+      rightButton.dataset.pressed = String(right && !left);
+    }
+
+    function resetGame() {
+      call("curve_reset_game");
+    }
+
+    function bindHold(button, value) {
+      const down = (event) => {
+        event.preventDefault();
+        button.dataset.pressed = "true";
+        setTurn(value);
+        button.setPointerCapture?.(event.pointerId);
+      };
+      const up = (event) => {
+        event.preventDefault();
+        button.dataset.pressed = "false";
+        setTurn(0);
+      };
+      button.addEventListener("pointerdown", down);
+      button.addEventListener("pointerup", up);
+      button.addEventListener("pointercancel", up);
+      button.addEventListener("lostpointercapture", () => {
+        button.dataset.pressed = "false";
+        setTurn(0);
+      });
+    }
+
+    bindHold(leftButton, -1);
+    bindHold(rightButton, 1);
+    resetButton.addEventListener("click", resetGame);
+
+    window.addEventListener("keydown", (event) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+        resetGame();
+        return;
+      }
+      if (["ArrowLeft", "ArrowRight", "KeyA", "KeyD"].includes(event.code)) {
+        event.preventDefault();
+        pressedKeys.add(event.code);
+        syncTurn();
+      }
+    });
+
+    window.addEventListener("keyup", (event) => {
+      if (pressedKeys.delete(event.code)) {
+        event.preventDefault();
+        syncTurn();
+      }
+    });
+
+    window.curveFeverReady = () => {
+      statusEl.textContent = "Ready";
+    };
+
+    if (!navigator.gpu) {
+      statusEl.textContent = "WebGPU unavailable";
+    }
+
+    window.Module = {
+      canvas,
+      print(text) {
+        console.log(text);
+      },
+      printErr(text) {
+        console.error(text);
+        statusEl.textContent = "WebGPU error";
+      },
+    };
+  </script>
+  <script src="./curve_web.js"></script>
+</body>
+</html>
