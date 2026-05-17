@@ -18,6 +18,9 @@
 
     * {
       box-sizing: border-box;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     html,
@@ -35,11 +38,18 @@
         var(--bg);
       color: var(--text);
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+      overscroll-behavior: none;
     }
 
     main {
       width: min(100vw, 760px);
       padding: 18px;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     .topbar,
@@ -59,6 +69,8 @@
       font-size: clamp(1.35rem, 2.6vw, 2.1rem);
       font-weight: 760;
       letter-spacing: 0;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     .status {
@@ -66,6 +78,8 @@
       color: var(--muted);
       font-size: 0.85rem;
       text-align: right;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     .stage {
@@ -77,6 +91,9 @@
       background: #12100c;
       box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
       overflow: hidden;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     canvas {
@@ -84,6 +101,9 @@
       width: 100%;
       height: 100%;
       touch-action: none;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     .controls {
@@ -112,6 +132,7 @@
       touch-action: manipulation;
       user-select: none;
       -webkit-user-select: none;
+      -webkit-user-drag: none;
       -webkit-tap-highlight-color: transparent;
     }
 
@@ -168,7 +189,19 @@
     const rightButton = document.getElementById("right");
     const resetButton = document.getElementById("reset");
     const pressedKeys = new Set();
-    const BUILD_ID = "speed70-controls1";
+    const BUILD_ID = "speed70-iosselect1";
+
+    function clearSelection() {
+      const selection = window.getSelection?.();
+      if (selection && !selection.isCollapsed) {
+        selection.removeAllRanges();
+      }
+    }
+
+    function preventSelectionGesture(event) {
+      event.preventDefault();
+      clearSelection();
+    }
 
     function call(name, args = []) {
       if (!window.Module || typeof window.Module.ccall !== "function") {
@@ -217,10 +250,17 @@
     bindHold(leftButton, -1);
     bindHold(rightButton, 1);
     for (const button of [leftButton, rightButton, resetButton]) {
-      button.addEventListener("selectstart", (event) => event.preventDefault());
-      button.addEventListener("dragstart", (event) => event.preventDefault());
+      button.addEventListener("selectstart", preventSelectionGesture);
+      button.addEventListener("dragstart", preventSelectionGesture);
     }
     resetButton.addEventListener("click", resetGame);
+
+    document.addEventListener("selectstart", preventSelectionGesture, { passive: false });
+    document.addEventListener("dragstart", preventSelectionGesture, { passive: false });
+    document.addEventListener("contextmenu", preventSelectionGesture, { passive: false });
+    document.addEventListener("selectionchange", clearSelection);
+    document.addEventListener("pointerdown", clearSelection);
+    document.addEventListener("pointerup", clearSelection);
 
     window.addEventListener("keydown", (event) => {
       if (event.code === "Space") {
@@ -267,6 +307,6 @@
       },
     };
   </script>
-  <script src="./curve_web.js?v=speed70-controls1"></script>
+  <script src="./curve_web.js?v=speed70-iosselect1"></script>
 </body>
 </html>
