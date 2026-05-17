@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Curve Fever WebGPU 70%</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0a08;
+      --panel: #17130f;
+      --line: #3c3329;
+      --text: #f6efe3;
+      --muted: #b7a996;
+      --accent: #3cdcff;
+      --danger: #ff6856;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      min-height: 100%;
+      background:
+        linear-gradient(180deg, rgba(60, 220, 255, 0.08), transparent 36%),
+        var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+      overscroll-behavior: none;
+    }
+
+    main {
+      width: min(100vw, 760px);
+      padding: 18px;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    .topbar,
+    .controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .topbar {
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.35rem, 2.6vw, 2.1rem);
+      font-weight: 760;
+      letter-spacing: 0;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    .status {
+      min-width: 7.5rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: right;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    .stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      max-height: calc(100vh - 150px);
+      border: 1px solid var(--line);
+      background: #12100c;
+      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
+      overflow: hidden;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: none;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    .controls {
+      margin-top: 12px;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    .turns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(96px, 1fr));
+      gap: 10px;
+      width: min(100%, 240px);
+    }
+
+    button {
+      min-height: 56px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      font-weight: 720;
+      cursor: pointer;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-user-drag: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+    }
+
+    button:active,
+    button[data-pressed="true"] {
+      background: #103540;
+      border-color: var(--accent);
+      color: white;
+    }
+
+    #reset {
+      min-width: 112px;
+    }
+
+    @media (max-width: 560px) {
+      main {
+        padding: 12px;
+      }
+
+      .stage {
+        max-height: calc(100vh - 138px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <h1>Curve Fever 70%</h1>
+      <div class="status" id="status">Loading WebGPU</div>
+    </div>
+
+    <div class="stage">
+      <canvas id="canvas" width="512" height="512"></canvas>
+    </div>
+
+    <div class="controls">
+      <div class="turns" aria-label="Turn controls">
+        <button id="left" type="button" aria-label="Turn left">&lt;</button>
+        <button id="right" type="button" aria-label="Turn right">&gt;</button>
+      </div>
+      <button id="reset" type="button">Reset</button>
+    </div>
+  </main>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const stage = document.querySelector(".stage");
+    const statusEl = document.getElementById("status");
+    const leftButton = document.getElementById("left");
+    const rightButton = document.getElementById("right");
+    const resetButton = document.getElementById("reset");
+    const pressedKeys = new Set();
+    const heldTurns = new Map();
+    const BUILD_ID = "speed70-touchzones1";
+
+    function clearSelection() {
+      const selection = window.getSelection?.();
+      if (selection && !selection.isCollapsed) {
+        selection.removeAllRanges();
+      }
+    }
+
+    function preventSelectionGesture(event) {
+      event.preventDefault();
+      clearSelection();
+    }
+
+    function call(name, args = []) {
+      if (!window.Module || typeof window.Module.ccall !== "function") {
+        return;
+      }
+      window.Module.ccall(name, null, args.map(() => "number"), args);
+    }
+
+    function setTurn(turn) {
+      call("curve_set_turn", [turn]);
+    }
+
+    function applyTurn() {
+      const left = pressedKeys.has("ArrowLeft") || pressedKeys.has("KeyA");
+      const right = pressedKeys.has("ArrowRight") || pressedKeys.has("KeyD");
+      let heldLeft = false;
+      let heldRight = false;
+      for (const turn of heldTurns.values()) {
+        heldLeft ||= turn < 0;
+        heldRight ||= turn > 0;
+      }
+      const wantsLeft = left || heldLeft;
+      const wantsRight = right || heldRight;
+      const turn = wantsLeft === wantsRight ? 0 : wantsLeft ? -1 : 1;
+      setTurn(turn);
+      leftButton.dataset.pressed = String(wantsLeft && !wantsRight);
+      rightButton.dataset.pressed = String(wantsRight && !wantsLeft);
+    }
+
+    function holdTurn(id, turn) {
+      if (turn === 0) {
+        heldTurns.delete(id);
+      } else {
+        heldTurns.set(id, turn);
+      }
+      applyTurn();
+    }
+
+    function stageTurn(event) {
+      const rect = stage.getBoundingClientRect();
+      return event.clientX - rect.left < rect.width * 0.5 ? -1 : 1;
+    }
+
+    function resetGame() {
+      call("curve_reset_game");
+    }
+
+    function bindHold(button, value) {
+      const down = (event) => {
+        event.preventDefault();
+        clearSelection();
+        button.setPointerCapture?.(event.pointerId);
+        holdTurn(`button-${event.pointerId}`, value);
+      };
+      const up = (event) => {
+        event.preventDefault();
+        clearSelection();
+        holdTurn(`button-${event.pointerId}`, 0);
+      };
+      button.addEventListener("pointerdown", down);
+      button.addEventListener("pointerup", up);
+      button.addEventListener("pointercancel", up);
+      button.addEventListener("lostpointercapture", () => {
+        for (const id of heldTurns.keys()) {
+          if (id.startsWith("button-")) {
+            heldTurns.delete(id);
+          }
+        }
+        applyTurn();
+      });
+    }
+
+    bindHold(leftButton, -1);
+    bindHold(rightButton, 1);
+    for (const button of [leftButton, rightButton, resetButton]) {
+      button.addEventListener("selectstart", preventSelectionGesture);
+      button.addEventListener("dragstart", preventSelectionGesture);
+    }
+    resetButton.addEventListener("click", resetGame);
+
+    stage.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      clearSelection();
+      stage.setPointerCapture?.(event.pointerId);
+      holdTurn(`stage-${event.pointerId}`, stageTurn(event));
+    });
+
+    stage.addEventListener("pointermove", (event) => {
+      if (heldTurns.has(`stage-${event.pointerId}`)) {
+        event.preventDefault();
+        holdTurn(`stage-${event.pointerId}`, stageTurn(event));
+      }
+    });
+
+    const releaseStagePointer = (event) => {
+      event.preventDefault();
+      clearSelection();
+      holdTurn(`stage-${event.pointerId}`, 0);
+    };
+    stage.addEventListener("pointerup", releaseStagePointer);
+    stage.addEventListener("pointercancel", releaseStagePointer);
+    stage.addEventListener("lostpointercapture", () => {
+      for (const id of heldTurns.keys()) {
+        if (id.startsWith("stage-")) {
+          heldTurns.delete(id);
+        }
+      }
+      applyTurn();
+    });
+
+    document.addEventListener("selectstart", preventSelectionGesture, { passive: false });
+    document.addEventListener("dragstart", preventSelectionGesture, { passive: false });
+    document.addEventListener("contextmenu", preventSelectionGesture, { passive: false });
+    document.addEventListener("selectionchange", clearSelection);
+    document.addEventListener("pointerdown", clearSelection);
+    document.addEventListener("pointerup", clearSelection);
+
+    window.addEventListener("keydown", (event) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+        resetGame();
+        return;
+      }
+      if (["ArrowLeft", "ArrowRight", "KeyA", "KeyD"].includes(event.code)) {
+        event.preventDefault();
+        pressedKeys.add(event.code);
+        applyTurn();
+      }
+    });
+
+    window.addEventListener("keyup", (event) => {
+      if (pressedKeys.delete(event.code)) {
+        event.preventDefault();
+        applyTurn();
+      }
+    });
+
+    window.curveFeverReady = () => {
+      statusEl.textContent = "Ready 70%";
+    };
+
+    if (!navigator.gpu) {
+      statusEl.textContent = "WebGPU unavailable";
+    }
+
+    window.Module = {
+      canvas,
+      locateFile(path, prefix) {
+        if (path.endsWith(".wasm")) {
+          return `${prefix}${path}?v=${BUILD_ID}`;
+        }
+        return `${prefix}${path}`;
+      },
+      print(text) {
+        console.log(text);
+      },
+      printErr(text) {
+        console.error(text);
+        statusEl.textContent = "WebGPU error";
+      },
+    };
+  </script>
+  <script src="./curve_web.js?v=speed70-touchzones1"></script>
+</body>
+</html>
