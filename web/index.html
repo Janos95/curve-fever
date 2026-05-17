@@ -88,6 +88,9 @@
 
     .controls {
       margin-top: 12px;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     .turns {
@@ -106,7 +109,9 @@
       font: inherit;
       font-weight: 720;
       cursor: pointer;
+      touch-action: manipulation;
       user-select: none;
+      -webkit-user-select: none;
       -webkit-tap-highlight-color: transparent;
     }
 
@@ -163,7 +168,7 @@
     const rightButton = document.getElementById("right");
     const resetButton = document.getElementById("reset");
     const pressedKeys = new Set();
-    const BUILD_ID = "speed70-cache2";
+    const BUILD_ID = "speed70-controls1";
 
     function call(name, args = []) {
       if (!window.Module || typeof window.Module.ccall !== "function") {
@@ -211,6 +216,10 @@
 
     bindHold(leftButton, -1);
     bindHold(rightButton, 1);
+    for (const button of [leftButton, rightButton, resetButton]) {
+      button.addEventListener("selectstart", (event) => event.preventDefault());
+      button.addEventListener("dragstart", (event) => event.preventDefault());
+    }
     resetButton.addEventListener("click", resetGame);
 
     window.addEventListener("keydown", (event) => {
@@ -258,6 +267,6 @@
       },
     };
   </script>
-  <script src="./curve_web.js?v=speed70-cache2"></script>
+  <script src="./curve_web.js?v=speed70-controls1"></script>
 </body>
 </html>
