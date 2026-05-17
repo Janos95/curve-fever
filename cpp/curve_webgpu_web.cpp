@@ -480,8 +480,8 @@ void Frame() {
         kHeight,
         gAction,
         gResetQueued ? 1u : 0u,
-        1.85f,
-        0.099f,
+        1.30f,
+        0.069f,
         2.0f,
     };
     gResetQueued = false;
