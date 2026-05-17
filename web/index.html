@@ -94,6 +94,7 @@
       -webkit-touch-callout: none;
       -webkit-user-select: none;
       user-select: none;
+      touch-action: none;
     }
 
     canvas {
@@ -115,13 +116,13 @@
 
     .turns {
       display: grid;
-      grid-template-columns: repeat(2, minmax(72px, 1fr));
+      grid-template-columns: repeat(2, minmax(96px, 1fr));
       gap: 10px;
-      width: min(100%, 180px);
+      width: min(100%, 240px);
     }
 
     button {
-      min-height: 44px;
+      min-height: 56px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--panel);
@@ -148,7 +149,7 @@
     }
 
     #reset {
-      min-width: 92px;
+      min-width: 112px;
     }
 
     @media (max-width: 560px) {
@@ -184,12 +185,14 @@
 
   <script>
     const canvas = document.getElementById("canvas");
+    const stage = document.querySelector(".stage");
     const statusEl = document.getElementById("status");
     const leftButton = document.getElementById("left");
     const rightButton = document.getElementById("right");
     const resetButton = document.getElementById("reset");
     const pressedKeys = new Set();
-    const BUILD_ID = "speed70-iosselect1";
+    const heldTurns = new Map();
+    const BUILD_ID = "speed70-touchzones1";
 
     function clearSelection() {
       const selection = window.getSelection?.();
@@ -214,12 +217,35 @@
       call("curve_set_turn", [turn]);
     }
 
-    function syncTurn() {
+    function applyTurn() {
       const left = pressedKeys.has("ArrowLeft") || pressedKeys.has("KeyA");
       const right = pressedKeys.has("ArrowRight") || pressedKeys.has("KeyD");
-      setTurn(left === right ? 0 : left ? -1 : 1);
-      leftButton.dataset.pressed = String(left && !right);
-      rightButton.dataset.pressed = String(right && !left);
+      let heldLeft = false;
+      let heldRight = false;
+      for (const turn of heldTurns.values()) {
+        heldLeft ||= turn < 0;
+        heldRight ||= turn > 0;
+      }
+      const wantsLeft = left || heldLeft;
+      const wantsRight = right || heldRight;
+      const turn = wantsLeft === wantsRight ? 0 : wantsLeft ? -1 : 1;
+      setTurn(turn);
+      leftButton.dataset.pressed = String(wantsLeft && !wantsRight);
+      rightButton.dataset.pressed = String(wantsRight && !wantsLeft);
+    }
+
+    function holdTurn(id, turn) {
+      if (turn === 0) {
+        heldTurns.delete(id);
+      } else {
+        heldTurns.set(id, turn);
+      }
+      applyTurn();
+    }
+
+    function stageTurn(event) {
+      const rect = stage.getBoundingClientRect();
+      return event.clientX - rect.left < rect.width * 0.5 ? -1 : 1;
     }
 
     function resetGame() {
@@ -229,21 +255,25 @@
     function bindHold(button, value) {
       const down = (event) => {
         event.preventDefault();
-        button.dataset.pressed = "true";
-        setTurn(value);
+        clearSelection();
         button.setPointerCapture?.(event.pointerId);
+        holdTurn(`button-${event.pointerId}`, value);
       };
       const up = (event) => {
         event.preventDefault();
-        button.dataset.pressed = "false";
-        setTurn(0);
+        clearSelection();
+        holdTurn(`button-${event.pointerId}`, 0);
       };
       button.addEventListener("pointerdown", down);
       button.addEventListener("pointerup", up);
       button.addEventListener("pointercancel", up);
       button.addEventListener("lostpointercapture", () => {
-        button.dataset.pressed = "false";
-        setTurn(0);
+        for (const id of heldTurns.keys()) {
+          if (id.startsWith("button-")) {
+            heldTurns.delete(id);
+          }
+        }
+        applyTurn();
       });
     }
 
@@ -254,6 +284,36 @@
       button.addEventListener("dragstart", preventSelectionGesture);
     }
     resetButton.addEventListener("click", resetGame);
+
+    stage.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      clearSelection();
+      stage.setPointerCapture?.(event.pointerId);
+      holdTurn(`stage-${event.pointerId}`, stageTurn(event));
+    });
+
+    stage.addEventListener("pointermove", (event) => {
+      if (heldTurns.has(`stage-${event.pointerId}`)) {
+        event.preventDefault();
+        holdTurn(`stage-${event.pointerId}`, stageTurn(event));
+      }
+    });
+
+    const releaseStagePointer = (event) => {
+      event.preventDefault();
+      clearSelection();
+      holdTurn(`stage-${event.pointerId}`, 0);
+    };
+    stage.addEventListener("pointerup", releaseStagePointer);
+    stage.addEventListener("pointercancel", releaseStagePointer);
+    stage.addEventListener("lostpointercapture", () => {
+      for (const id of heldTurns.keys()) {
+        if (id.startsWith("stage-")) {
+          heldTurns.delete(id);
+        }
+      }
+      applyTurn();
+    });
 
     document.addEventListener("selectstart", preventSelectionGesture, { passive: false });
     document.addEventListener("dragstart", preventSelectionGesture, { passive: false });
@@ -271,14 +331,14 @@
       if (["ArrowLeft", "ArrowRight", "KeyA", "KeyD"].includes(event.code)) {
         event.preventDefault();
         pressedKeys.add(event.code);
-        syncTurn();
+        applyTurn();
       }
     });
 
     window.addEventListener("keyup", (event) => {
       if (pressedKeys.delete(event.code)) {
         event.preventDefault();
-        syncTurn();
+        applyTurn();
       }
     });
 
@@ -307,6 +367,6 @@
       },
     };
   </script>
-  <script src="./curve_web.js?v=speed70-iosselect1"></script>
+  <script src="./curve_web.js?v=speed70-touchzones1"></script>
 </body>
 </html>
