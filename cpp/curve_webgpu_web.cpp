@@ -43,6 +43,7 @@ bool gReady = false;
 bool gGameStateReadbackPending = false;
 uint32_t gLastRoundOver = 0;
 uint32_t gLastWinner = 0;
+uint32_t gLastSteps = 0;
 
 wgpu::Buffer CreateBuffer(uint64_t size, wgpu::BufferUsage usage) {
     return curve::CreateBuffer(gDevice, size, usage);
@@ -57,14 +58,15 @@ uint32_t MakeResetSeed() {
 }
 
 void PublishGameState(const GameState& state) {
-    if (state.roundOver == gLastRoundOver && state.winner == gLastWinner) {
+    if (state.roundOver == gLastRoundOver && state.winner == gLastWinner && state.steps == gLastSteps) {
         return;
     }
     gLastRoundOver = state.roundOver;
     gLastWinner = state.winner;
+    gLastSteps = state.steps;
     EM_ASM({
-      if (globalThis.curveFeverStatus) globalThis.curveFeverStatus($0, $1);
-    }, state.roundOver, state.winner);
+      if (globalThis.curveFeverStatus) globalThis.curveFeverStatus($0, $1, $2);
+    }, state.roundOver, state.winner, state.steps);
 }
 
 void QueueGameStateReadback() {

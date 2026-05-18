@@ -48,7 +48,7 @@ struct PlayerState {
 struct GameState {
   round_over: u32,
   winner: u32,
-  pad0: u32,
+  steps: u32,
   pad1: u32,
 };
 
@@ -301,7 +301,7 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
     if (params.reset != 0u) {
       game.round_over = 0u;
       game.winner = 0u;
-      game.pad0 = 0u;
+      game.steps = 0u;
       game.pad1 = 0u;
     }
   }
@@ -393,6 +393,7 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
     let human_dead = atomicLoad(&dead[0]) != 0u;
     let bot_dead = atomicLoad(&dead[1]) != 0u;
     game.round_over = 1u;
+    game.steps = params.frame;
     if (human_dead && !bot_dead) {
       game.winner = 2u;
     } else if (bot_dead && !human_dead) {

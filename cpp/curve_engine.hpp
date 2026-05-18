@@ -41,7 +41,7 @@ struct InteractiveParams {
 struct GameState {
     uint32_t roundOver;
     uint32_t winner;
-    uint32_t pad0;
+    uint32_t steps;
     uint32_t pad1;
 };
 

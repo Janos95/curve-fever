@@ -204,7 +204,7 @@
     const resetButton = document.getElementById("reset");
     const pressedKeys = new Set();
     const heldTurns = new Map();
-    const BUILD_ID = "random-start1";
+    const BUILD_ID = "winner-steps1";
 
     function clearSelection() {
       const selection = window.getSelection?.();
@@ -359,18 +359,22 @@
       statusEl.dataset.result = "";
     };
 
-    window.curveFeverStatus = (roundOver, winner) => {
+    function resultText(label, steps) {
+      return `${label} in ${steps.toLocaleString()} steps`;
+    }
+
+    window.curveFeverStatus = (roundOver, winner, steps = 0) => {
       if (!roundOver) {
         statusEl.textContent = "Ready vs Bot";
         statusEl.dataset.result = "";
       } else if (winner === 1) {
-        statusEl.textContent = "You win";
+        statusEl.textContent = resultText("You win", steps);
         statusEl.dataset.result = "human";
       } else if (winner === 2) {
-        statusEl.textContent = "Bot wins";
+        statusEl.textContent = resultText("Bot wins", steps);
         statusEl.dataset.result = "bot";
       } else {
-        statusEl.textContent = "Draw";
+        statusEl.textContent = resultText("Draw", steps);
         statusEl.dataset.result = "draw";
       }
     };
@@ -396,6 +400,6 @@
       },
     };
   </script>
-  <script src="./curve_web.js?v=random-start1"></script>
+  <script src="./curve_web.js?v=winner-steps1"></script>
 </body>
 </html>
