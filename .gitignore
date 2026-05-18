@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.py[cod]
+src/curve_fever/_curve_webgpu_native*.so
 
 .pytest_cache/
 .ruff_cache/

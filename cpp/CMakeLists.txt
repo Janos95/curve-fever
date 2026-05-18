@@ -51,12 +51,28 @@ add_custom_command(TARGET curve_web POST_BUILD
     "${CMAKE_SOURCE_DIR}/../web/dist/.nojekyll"
 )
 else()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" -c "import sysconfig; print(sysconfig.get_paths()['include'])"
+  OUTPUT_VARIABLE Python3_INCLUDE_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX') or '.so')"
+  OUTPUT_VARIABLE Python3_EXTENSION_SUFFIX
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
 add_executable(curve_webgpu_demo
   curve_webgpu_demo.cpp
 )
 
 add_executable(curve_webgpu_benchmark
   curve_webgpu_benchmark.cpp
+)
+
+add_library(_curve_webgpu_native MODULE
+  curve_webgpu_python.cpp
 )
 
 target_include_directories(curve_webgpu_demo PRIVATE
@@ -69,6 +85,12 @@ target_include_directories(curve_webgpu_benchmark PRIVATE
   "${DAWN_BUILD_DIR}/gen/include"
 )
 
+target_include_directories(_curve_webgpu_native PRIVATE
+  "${DAWN_ROOT}/include"
+  "${DAWN_BUILD_DIR}/gen/include"
+  "${Python3_INCLUDE_DIR}"
+)
+
 target_link_libraries(curve_webgpu_demo PRIVATE
   curve_engine
   "${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.dylib"
@@ -79,6 +101,17 @@ target_link_libraries(curve_webgpu_benchmark PRIVATE
   "${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.dylib"
 )
 
+target_link_libraries(_curve_webgpu_native PRIVATE
+  curve_engine
+  "${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn_tinygrad.dylib"
+)
+
+set_target_properties(_curve_webgpu_native PROPERTIES
+  PREFIX ""
+  SUFFIX "${Python3_EXTENSION_SUFFIX}"
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/../src/curve_fever"
+)
+
 target_link_options(curve_webgpu_demo PRIVATE
   "-Wl,-rpath,${DAWN_BUILD_DIR}/src/dawn/native"
 )
@@ -86,4 +119,21 @@ target_link_options(curve_webgpu_demo PRIVATE
 target_link_options(curve_webgpu_benchmark PRIVATE
   "-Wl,-rpath,${DAWN_BUILD_DIR}/src/dawn/native"
 )
+
+target_link_options(_curve_webgpu_native PRIVATE
+  "-Wl,-rpath,${DAWN_BUILD_DIR}/src/dawn/native"
+)
+
+if(APPLE)
+target_link_options(_curve_webgpu_native PRIVATE
+  "-undefined"
+  "dynamic_lookup"
+)
+add_custom_command(TARGET _curve_webgpu_native POST_BUILD
+  COMMAND install_name_tool
+    -change "out/Release/src/dawn/native/libwebgpu_dawn_tinygrad.dylib"
+            "${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn_tinygrad.dylib"
+            "$<TARGET_FILE:_curve_webgpu_native>"
+)
+endif()
 endif()
