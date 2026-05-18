@@ -82,6 +82,18 @@
       user-select: none;
     }
 
+    .status[data-result="human"] {
+      color: var(--accent);
+    }
+
+    .status[data-result="bot"] {
+      color: #ff5cff;
+    }
+
+    .status[data-result="draw"] {
+      color: var(--danger);
+    }
+
     .stage {
       position: relative;
       width: 100%;
@@ -192,7 +204,7 @@
     const resetButton = document.getElementById("reset");
     const pressedKeys = new Set();
     const heldTurns = new Map();
-    const BUILD_ID = "bot-slower1";
+    const BUILD_ID = "bot-winner1";
 
     function clearSelection() {
       const selection = window.getSelection?.();
@@ -344,6 +356,23 @@
 
     window.curveFeverReady = () => {
       statusEl.textContent = "Ready vs Bot";
+      statusEl.dataset.result = "";
+    };
+
+    window.curveFeverStatus = (roundOver, winner) => {
+      if (!roundOver) {
+        statusEl.textContent = "Ready vs Bot";
+        statusEl.dataset.result = "";
+      } else if (winner === 1) {
+        statusEl.textContent = "You win";
+        statusEl.dataset.result = "human";
+      } else if (winner === 2) {
+        statusEl.textContent = "Bot wins";
+        statusEl.dataset.result = "bot";
+      } else {
+        statusEl.textContent = "Draw";
+        statusEl.dataset.result = "draw";
+      }
     };
 
     if (!navigator.gpu) {
@@ -367,6 +396,6 @@
       },
     };
   </script>
-  <script src="./curve_web.js?v=bot-slower1"></script>
+  <script src="./curve_web.js?v=bot-winner1"></script>
 </body>
 </html>
