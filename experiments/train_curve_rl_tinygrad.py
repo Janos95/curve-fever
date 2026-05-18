@@ -637,7 +637,29 @@ def stack_tensors(items: list[Tensor]) -> Tensor:
   return Tensor.cat(*[x.reshape(1, *x.shape) for x in items], dim=0)
 
 
+def estimated_obs_gib(batch_size: int, steps: int, image_size: int, dtype: str) -> float:
+  bytes_per_value = 2 if dtype == "float16" else 4
+  values = batch_size * steps * 4 * image_size * image_size
+  return values * bytes_per_value / (1024**3)
+
+
+def maybe_store_obs(obs: Tensor, dtype: str) -> Tensor:
+  obs = obs.detach()
+  if dtype == "float16":
+    return obs.cast(dtypes.float16).contiguous().realize().detach()
+  return obs.clone().realize().detach()
+
+
 def ppo_train(args: argparse.Namespace) -> None:
+  if args.rollout_steps <= 0 or args.min_rollout_steps <= 0 or args.max_rollout_steps <= 0:
+    raise ValueError("rollout step counts must be positive")
+  if args.rollout_check_interval <= 0:
+    raise ValueError("--rollout-check-interval must be positive")
+  if not 0.0 < args.rollout_completion_frac <= 1.0:
+    raise ValueError("--rollout-completion-frac must be in (0, 1]")
+  if args.rollout_mode == "until-complete" and args.min_rollout_steps > args.max_rollout_steps:
+    raise ValueError("--min-rollout-steps must be <= --max-rollout-steps")
+
   Tensor.manual_seed(args.seed)
   args.out.mkdir(parents=True, exist_ok=True)
   metrics_path = args.out / "metrics.jsonl"
@@ -660,8 +682,19 @@ def ppo_train(args: argparse.Namespace) -> None:
   opt = AdamW(get_parameters(model), lr=args.lr, weight_decay=args.weight_decay, fused=args.fused_optim)
   env = CurveWebGPUEnv(args.batch_size, args.image_size, args.image_size, args.device)
 
+  max_rollout_steps = args.rollout_steps if args.rollout_mode == "fixed" else args.max_rollout_steps
+  max_obs_gib = estimated_obs_gib(args.batch_size, max_rollout_steps, args.image_size, args.store_obs_dtype)
+  if max_obs_gib > args.max_rollout_obs_gib:
+    raise ValueError(
+      f"max rollout observation storage would be ~{max_obs_gib:.1f} GiB. "
+      f"Lower --batch-size/--max-rollout-steps or raise --max-rollout-obs-gib."
+    )
+
   print(
-    f"device={args.device} batch={args.batch_size} rollout={args.rollout_steps} "
+    f"device={args.device} batch={args.batch_size} rollout_mode={args.rollout_mode} "
+    f"rollout_steps={args.rollout_steps} min_rollout_steps={args.min_rollout_steps} "
+    f"max_rollout_steps={args.max_rollout_steps} completion_frac={args.rollout_completion_frac} "
+    f"store_obs_dtype={args.store_obs_dtype} max_obs_gib={max_obs_gib:.2f} "
     f"pretrained_tensors={loaded} target_win_rate={args.target_win_rate}",
     flush=True,
   )
@@ -669,6 +702,7 @@ def ppo_train(args: argparse.Namespace) -> None:
   last_improve_check = time.time()
   best_win_rate = 0.0
   start_time = time.time()
+  total_env_steps = 0
 
   for update in range(1, args.max_updates + 1):
     Tensor.training = False
@@ -678,20 +712,37 @@ def ppo_train(args: argparse.Namespace) -> None:
     value_buf: list[Tensor] = []
     reward_buf: list[Tensor] = []
     done_buf: list[Tensor] = []
+    done_seen = Tensor.zeros(args.batch_size, dtype=dtypes.int32, device=args.device).contiguous().realize()
+    completed_envs = 0
+    completed_fraction = 0.0
 
-    for _ in range(args.rollout_steps):
+    rollout_limit = args.rollout_steps if args.rollout_mode == "fixed" else args.max_rollout_steps
+    for step_idx in range(rollout_limit):
       obs_t = env.obs.clone().realize()
       logits, value = model(obs_t)
       actions, logp, _ = sample_actions(logits, args.device)
       env.step(actions)
-      obs_buf.append(obs_t.detach())
+      done_t = env.dones.clone().realize().detach()
+      obs_buf.append(maybe_store_obs(obs_t, args.store_obs_dtype))
       action_buf.append(actions.detach())
       logp_buf.append(logp.detach())
       value_buf.append(value.detach())
       reward_buf.append(env.rewards.clone().realize().detach())
-      done_buf.append(env.dones.clone().realize().detach())
+      done_buf.append(done_t)
+
+      if args.rollout_mode == "until-complete":
+        done_seen = (done_seen + done_t).clip(0, 1).cast(dtypes.int32).contiguous().realize()
+        rollout_step = step_idx + 1
+        should_check = rollout_step >= args.min_rollout_steps and rollout_step % args.rollout_check_interval == 0
+        if should_check:
+          completed_envs = int(done_seen.sum().numpy())
+          completed_fraction = completed_envs / args.batch_size
+          if completed_fraction >= args.rollout_completion_frac:
+            break
 
     with_next = model(env.obs.clone().realize())[1].detach()
+    rollout_steps = len(obs_buf)
+    total_env_steps += rollout_steps * args.batch_size
     rewards = reward_buf
     dones = done_buf
     values = value_buf
@@ -699,7 +750,7 @@ def ppo_train(args: argparse.Namespace) -> None:
     returns: list[Tensor] = []
     gae = Tensor.zeros(args.batch_size, dtype=dtypes.float32, device=args.device).contiguous().realize()
     next_value = with_next
-    for t in reversed(range(args.rollout_steps)):
+    for t in reversed(range(rollout_steps)):
       mask = 1.0 - dones[t].cast(dtypes.float32)
       delta = rewards[t] + args.gamma * next_value * mask - values[t]
       gae = delta + args.gamma * args.gae_lambda * mask * gae
@@ -707,15 +758,15 @@ def ppo_train(args: argparse.Namespace) -> None:
       returns.insert(0, (gae + values[t]).detach())
       next_value = values[t]
 
-    obs = stack_tensors(obs_buf).reshape(args.rollout_steps * args.batch_size, 4, args.image_size, args.image_size)
-    actions = stack_tensors(action_buf).reshape(args.rollout_steps * args.batch_size)
-    old_logp = stack_tensors(logp_buf).reshape(args.rollout_steps * args.batch_size)
-    adv = stack_tensors(advantages).reshape(args.rollout_steps * args.batch_size)
-    ret = stack_tensors(returns).reshape(args.rollout_steps * args.batch_size)
+    obs = stack_tensors(obs_buf).reshape(rollout_steps * args.batch_size, 4, args.image_size, args.image_size)
+    actions = stack_tensors(action_buf).reshape(rollout_steps * args.batch_size)
+    old_logp = stack_tensors(logp_buf).reshape(rollout_steps * args.batch_size)
+    adv = stack_tensors(advantages).reshape(rollout_steps * args.batch_size)
+    ret = stack_tensors(returns).reshape(rollout_steps * args.batch_size)
     adv = ((adv - adv.mean()) / (adv.std() + 1e-8)).detach()
 
     Tensor.training = True
-    train_size = args.rollout_steps * args.batch_size
+    train_size = rollout_steps * args.batch_size
     policy_loss_acc = 0.0
     value_loss_acc = 0.0
     entropy_acc = 0.0
@@ -723,7 +774,7 @@ def ppo_train(args: argparse.Namespace) -> None:
     for _epoch in range(args.ppo_epochs):
       for start in range(0, train_size, args.minibatch_size):
         end = min(start + args.minibatch_size, train_size)
-        mb_obs = obs[start:end]
+        mb_obs = obs[start:end].cast(dtypes.float32)
         mb_actions = actions[start:end]
         mb_old_logp = old_logp[start:end]
         mb_adv = adv[start:end]
@@ -760,7 +811,10 @@ def ppo_train(args: argparse.Namespace) -> None:
         "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "elapsed_sec": elapsed,
         "update": update,
-        "env_steps": update * args.rollout_steps * args.batch_size,
+        "env_steps": total_env_steps,
+        "rollout_steps": rollout_steps,
+        "rollout_completed_envs": completed_envs,
+        "rollout_completed_fraction": completed_fraction,
         "episodes": counters["episodes"],
         "wins": counters["wins"],
         "losses": counters["losses"],
@@ -805,7 +859,14 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--device", default="WEBGPU")
   parser.add_argument("--batch-size", type=int, default=2048)
   parser.add_argument("--image-size", type=int, default=84)
-  parser.add_argument("--rollout-steps", type=int, default=4)
+  parser.add_argument("--rollout-mode", choices=("fixed", "until-complete"), default="until-complete")
+  parser.add_argument("--rollout-steps", type=int, default=64)
+  parser.add_argument("--min-rollout-steps", type=int, default=16)
+  parser.add_argument("--max-rollout-steps", type=int, default=128)
+  parser.add_argument("--rollout-completion-frac", type=float, default=0.80)
+  parser.add_argument("--rollout-check-interval", type=int, default=8)
+  parser.add_argument("--store-obs-dtype", choices=("float32", "float16"), default="float32")
+  parser.add_argument("--max-rollout-obs-gib", type=float, default=32.0)
   parser.add_argument("--minibatch-size", type=int, default=1024)
   parser.add_argument("--ppo-epochs", type=int, default=1)
   parser.add_argument("--max-updates", type=int, default=100000)
