@@ -14,7 +14,7 @@ if DEFAULT_WEBGPU_PATH.exists():
   os.environ.setdefault("WEBGPU_PATH", str(DEFAULT_WEBGPU_PATH))
 os.environ.setdefault("WEBGPU_BACKEND", "WGPUBackendType_Metal")
 
-from tinygrad import Tensor, dtypes, nn  # noqa: E402
+from tinygrad import Tensor, TinyJit, dtypes, nn  # noqa: E402
 from tinygrad.nn.optim import AdamW  # noqa: E402
 from tinygrad.nn.state import get_parameters, get_state_dict, safe_save  # noqa: E402
 
@@ -130,6 +130,37 @@ def count_params(model: AtariACT) -> int:
   return sum(int(np.prod(p.shape)) for p in get_parameters(model))
 
 
+def training_loss(model: AtariACT, x: Tensor, y: Tensor, action_vocab: int) -> Tensor:
+  logits = model(x)
+  return logits.reshape(-1, action_vocab).sparse_categorical_crossentropy(y.reshape(-1))
+
+
+def eval_outputs(model: AtariACT, x: Tensor, y: Tensor, action_vocab: int) -> tuple[Tensor, Tensor, Tensor]:
+  logits = model(x)
+  loss = logits.reshape(-1, action_vocab).sparse_categorical_crossentropy(y.reshape(-1), reduction="sum")
+  preds = logits.argmax(axis=-1)
+  _, top3_preds = logits.topk(k=min(3, action_vocab), dim=-1)
+  return loss, preds, top3_preds
+
+
+def make_train_step(model: AtariACT, opt: AdamW, action_vocab: int, use_jit: bool):
+  def step(x: Tensor, y: Tensor) -> Tensor:
+    loss = training_loss(model, x, y, action_vocab)
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
+    return loss
+
+  return TinyJit(step) if use_jit else step
+
+
+def make_eval_step(model: AtariACT, action_vocab: int, use_jit: bool):
+  def step(x: Tensor, y: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    return eval_outputs(model, x, y, action_vocab)
+
+  return TinyJit(step) if use_jit else step
+
+
 def batch_indices(total: int, batch_size: int, shuffle: bool, rng: np.random.Generator, max_batches: int | None = None):
   indices = np.arange(total)
   if shuffle:
@@ -146,8 +177,11 @@ def evaluate(
   batch_size: int,
   device: str,
   max_batches: int | None = None,
+  use_jit: bool = False,
 ) -> dict:
   Tensor.training = False
+  eval_step = make_eval_step(model, model.action_vocab, use_jit)
+  eager_eval_step = make_eval_step(model, model.action_vocab, False)
   total_loss = 0.0
   total_tokens = 0
   total_sequences = 0
@@ -161,10 +195,9 @@ def evaluate(
 
   for idx in batch_indices(len(dataset), batch_size, False, np.random.default_rng(0), max_batches):
     x, y = dataset.batch(idx, device)
-    logits = model(x)
-    loss = logits.reshape(-1, model.action_vocab).sparse_categorical_crossentropy(y.reshape(-1), reduction="sum")
-    preds = logits.argmax(axis=-1)
-    _, top3_preds = logits.topk(k=min(3, model.action_vocab), dim=-1)
+    step = eval_step if use_jit and len(idx) == batch_size else eager_eval_step
+    loss, preds, top3_preds = step(x, y)
+    Tensor.realize(loss, preds, top3_preds)
 
     y_np = y.numpy()
     pred_np = preds.numpy()
@@ -216,8 +249,11 @@ def train(args: argparse.Namespace) -> None:
   )
   move_model(model, args.device)
   opt = AdamW(get_parameters(model), lr=args.lr, weight_decay=args.weight_decay, fused=args.fused_optim)
+  train_step = make_train_step(model, opt, meta["action_vocab"], args.jit_train_step)
+  eager_train_step = make_train_step(model, opt, meta["action_vocab"], False)
 
   print(f"device={args.device} webgpu_path={os.environ.get('WEBGPU_PATH', '<unset>')}")
+  print(f"jit_train_step={args.jit_train_step} jit_eval_step={args.jit_eval_step} fused_optim={args.fused_optim}")
   print(f"params={count_params(model):,}")
   print(f"train={len(train_ds):,} test={len(test_ds):,}")
   metrics = {
@@ -237,17 +273,14 @@ def train(args: argparse.Namespace) -> None:
 
     for step, idx in enumerate(batch_indices(len(train_ds), args.batch_size, True, rng, args.max_train_batches), 1):
       x, y = train_ds.batch(idx, args.device)
-      logits = model(x)
-      loss = logits.reshape(-1, meta["action_vocab"]).sparse_categorical_crossentropy(y.reshape(-1))
-      opt.zero_grad()
-      loss.backward()
-      opt.step()
+      step_fn = train_step if args.jit_train_step and len(idx) == args.batch_size else eager_train_step
+      loss = step_fn(x, y)
       running_loss += float(loss.numpy()) * int(y.shape[0]) * meta["chunk_len"]
       running_tokens += int(y.shape[0]) * meta["chunk_len"]
       if step % args.log_interval == 0 or step == (len(train_ds) + args.batch_size - 1) // args.batch_size:
         print(f"epoch={epoch:02d} step={step:04d} loss={running_loss / running_tokens:.4f}", flush=True)
 
-    eval_metrics = evaluate(model, test_ds, args.eval_batch_size, args.device, args.max_eval_batches)
+    eval_metrics = evaluate(model, test_ds, args.eval_batch_size, args.device, args.max_eval_batches, args.jit_eval_step)
     epoch_metrics = {
       "epoch": epoch,
       "train_loss": running_loss / running_tokens,
@@ -282,9 +315,12 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--seed", type=int, default=0)
   parser.add_argument("--log-interval", type=int, default=25)
   parser.add_argument("--fused-optim", action="store_true")
+  parser.add_argument("--no-jit-train-step", dest="jit_train_step", action="store_false")
+  parser.add_argument("--no-jit-eval-step", dest="jit_eval_step", action="store_false")
   parser.add_argument("--max-train-batches", type=int, default=None)
   parser.add_argument("--max-eval-batches", type=int, default=None)
   parser.add_argument("--save", type=Path, default=Path("runs/atari-act-tinygrad-webgpu/model.safetensors"))
+  parser.set_defaults(jit_train_step=True, jit_eval_step=True)
   return parser.parse_args()
 
 

@@ -25,3 +25,5 @@ If the Emscripten SDK is not at `/Users/janosmeny/Projects/emsdk`, set `EMSDK_DI
 ```
 
 Reference PyTorch checkpoint on `../WorldModel/data/atari-act-stratified`: `43.12%` token accuracy, `77.27%` top-3 accuracy. The tinygrad/WebGPU 3-epoch run reached `42.75%` token accuracy and `77.04%` top-3 accuracy.
+
+Tinygrad `TinyJit` is enabled for train and eval steps by default. For backend debugging, pass `--no-jit-train-step` or `--no-jit-eval-step`.
