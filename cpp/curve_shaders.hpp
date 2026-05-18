@@ -51,6 +51,7 @@ var<workgroup> next_heading: array<f32, MAX_PLAYERS>;
 var<workgroup> chosen_action: array<i32, MAX_PLAYERS>;
 var<workgroup> was_alive: array<u32, MAX_PLAYERS>;
 var<workgroup> dead: array<atomic<u32>, MAX_PLAYERS>;
+var<workgroup> round_over: atomic<u32>;
 var<workgroup> touched_cell: array<u32, MAX_PLAYERS * MAX_FRAGMENTS>;
 var<workgroup> touched_time: array<u32, MAX_PLAYERS * MAX_FRAGMENTS>;
 
@@ -262,6 +263,10 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
   storageBarrier();
   workgroupBarrier();
 
+  if (lane == 0u) {
+    atomicStore(&round_over, 0u);
+  }
+
   if (lane < MAX_PLAYERS) {
     if (params.reset != 0u) {
       reset_player(lane);
@@ -299,6 +304,12 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
 
   for (var i = lane; i < MAX_PLAYERS * MAX_FRAGMENTS; i = i + WORKGROUP_SIZE) {
     compute_fragment(i / MAX_FRAGMENTS, i % MAX_FRAGMENTS);
+  }
+
+  workgroupBarrier();
+
+  if (lane < MAX_PLAYERS && was_alive[lane] != 0u && atomicLoad(&dead[lane]) != 0u) {
+    atomicStore(&round_over, 1u);
   }
 
   workgroupBarrier();
@@ -345,7 +356,7 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
   workgroupBarrier();
 
   if (lane < MAX_PLAYERS && was_alive[lane] != 0u) {
-    if (atomicLoad(&dead[lane]) == 0u) {
+    if (atomicLoad(&dead[lane]) == 0u && atomicLoad(&round_over) == 0u) {
       players[lane].prev_pos = players[lane].pos;
       players[lane].pos = next_pos[lane];
       players[lane].heading = next_heading[lane];
@@ -353,9 +364,11 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
       players[lane].pad = u32(chosen_action[lane] + 1i);
     } else {
       players[lane].alive = 0u;
-      let x = clamp(i32(players[lane].pos.x), 0i, i32(params.width) - 1i);
-      let y = clamp(i32(players[lane].pos.y), 0i, i32(params.height) - 1i);
-      image[flatten_cell(x, y)] = select(HUMAN_DEAD, BOT_DEAD, lane == 1u);
+      if (atomicLoad(&dead[lane]) != 0u) {
+        let x = clamp(i32(players[lane].pos.x), 0i, i32(params.width) - 1i);
+        let y = clamp(i32(players[lane].pos.y), 0i, i32(params.height) - 1i);
+        image[flatten_cell(x, y)] = select(HUMAN_DEAD, BOT_DEAD, lane == 1u);
+      }
     }
   }
 }
