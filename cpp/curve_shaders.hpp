@@ -41,10 +41,18 @@ struct PlayerState {
   pad: u32,
 };
 
+struct GameState {
+  round_over: u32,
+  winner: u32,
+  pad0: u32,
+  pad1: u32,
+};
+
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> players: array<PlayerState>;
 @group(0) @binding(2) var<storage, read_write> occupancy: array<u32>;
 @group(0) @binding(3) var<storage, read_write> image: array<u32>;
+@group(0) @binding(4) var<storage, read_write> game: GameState;
 
 var<workgroup> next_pos: array<vec2<f32>, MAX_PLAYERS>;
 var<workgroup> next_heading: array<f32, MAX_PLAYERS>;
@@ -265,6 +273,12 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
 
   if (lane == 0u) {
     atomicStore(&round_over, 0u);
+    if (params.reset != 0u) {
+      game.round_over = 0u;
+      game.winner = 0u;
+      game.pad0 = 0u;
+      game.pad1 = 0u;
+    }
   }
 
   if (lane < MAX_PLAYERS) {
@@ -344,10 +358,31 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
 
   workgroupBarrier();
 
+  if (lane < MAX_PLAYERS && was_alive[lane] != 0u && atomicLoad(&dead[lane]) != 0u) {
+    atomicStore(&round_over, 1u);
+  }
+
+  workgroupBarrier();
+
+  if (lane == 0u && atomicLoad(&round_over) != 0u && game.round_over == 0u) {
+    let human_dead = atomicLoad(&dead[0]) != 0u;
+    let bot_dead = atomicLoad(&dead[1]) != 0u;
+    game.round_over = 1u;
+    if (human_dead && !bot_dead) {
+      game.winner = 2u;
+    } else if (bot_dead && !human_dead) {
+      game.winner = 1u;
+    } else {
+      game.winner = 3u;
+    }
+  }
+
+  workgroupBarrier();
+
   for (var i = lane; i < MAX_PLAYERS * MAX_FRAGMENTS; i = i + WORKGROUP_SIZE) {
     let p = i / MAX_FRAGMENTS;
     let c = touched_cell[i];
-    if (c != INVALID_CELL && was_alive[p] != 0u && atomicLoad(&dead[p]) == 0u) {
+    if (c != INVALID_CELL && was_alive[p] != 0u && atomicLoad(&dead[p]) == 0u && atomicLoad(&round_over) == 0u) {
       occupancy[c] = (params.frame << 8u) | (p + 1u);
       image[c] = players[p].color;
     }

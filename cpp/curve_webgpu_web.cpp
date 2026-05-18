@@ -15,6 +15,7 @@ constexpr uint32_t kCells = kWidth * kHeight;
 constexpr uint32_t kImageBytes = kCells * 4;
 
 using Params = curve::InteractiveParams;
+using GameState = curve::GameState;
 using PlayerState = curve::PlayerState;
 
 wgpu::Instance gInstance = wgpuCreateInstance(nullptr);
@@ -25,6 +26,8 @@ wgpu::Surface gSurface;
 wgpu::TextureFormat gSurfaceFormat = wgpu::TextureFormat::Undefined;
 wgpu::Buffer gParamsBuffer;
 wgpu::Buffer gPlayerBuffer;
+wgpu::Buffer gGameStateBuffer;
+wgpu::Buffer gGameStateReadbackBuffer;
 wgpu::Buffer gOccupancyBuffer;
 wgpu::Buffer gImageBuffer;
 wgpu::BindGroup gComputeBindGroup;
@@ -36,15 +39,45 @@ uint32_t gFrame = 0;
 int32_t gAction = 0;
 bool gResetQueued = true;
 bool gReady = false;
+bool gGameStateReadbackPending = false;
+uint32_t gLastRoundOver = 0;
+uint32_t gLastWinner = 0;
 
 wgpu::Buffer CreateBuffer(uint64_t size, wgpu::BufferUsage usage) {
     return curve::CreateBuffer(gDevice, size, usage);
 }
 
+void PublishGameState(const GameState& state) {
+    if (state.roundOver == gLastRoundOver && state.winner == gLastWinner) {
+        return;
+    }
+    gLastRoundOver = state.roundOver;
+    gLastWinner = state.winner;
+    EM_ASM({
+      if (globalThis.curveFeverStatus) globalThis.curveFeverStatus($0, $1);
+    }, state.roundOver, state.winner);
+}
 
+void QueueGameStateReadback() {
+    gGameStateReadbackPending = true;
+    gGameStateReadbackBuffer.MapAsync(
+        wgpu::MapMode::Read,
+        0,
+        sizeof(GameState),
+        wgpu::CallbackMode::AllowSpontaneous,
+        [](wgpu::MapAsyncStatus status, wgpu::StringView) {
+            if (status == wgpu::MapAsyncStatus::Success) {
+                const auto* state =
+                    static_cast<const GameState*>(gGameStateReadbackBuffer.GetConstMappedRange(0, sizeof(GameState)));
+                PublishGameState(*state);
+                gGameStateReadbackBuffer.Unmap();
+            }
+            gGameStateReadbackPending = false;
+        });
+}
 
 wgpu::BindGroupLayout CreateComputeBindGroupLayout() {
-    std::array<wgpu::BindGroupLayoutEntry, 4> entries{};
+    std::array<wgpu::BindGroupLayoutEntry, 5> entries{};
     entries[0].binding = 0;
     entries[0].visibility = wgpu::ShaderStage::Compute;
     entries[0].buffer.type = wgpu::BufferBindingType::Uniform;
@@ -57,6 +90,9 @@ wgpu::BindGroupLayout CreateComputeBindGroupLayout() {
     entries[3].binding = 3;
     entries[3].visibility = wgpu::ShaderStage::Compute;
     entries[3].buffer.type = wgpu::BufferBindingType::Storage;
+    entries[4].binding = 4;
+    entries[4].visibility = wgpu::ShaderStage::Compute;
+    entries[4].buffer.type = wgpu::BufferBindingType::Storage;
 
     wgpu::BindGroupLayoutDescriptor desc;
     desc.entryCount = entries.size();
@@ -82,13 +118,15 @@ wgpu::BindGroupLayout CreateRenderBindGroupLayout() {
 void CreateBindGroupsAndPipelines() {
     gParamsBuffer = CreateBuffer(sizeof(Params), wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst);
     gPlayerBuffer = CreateBuffer(sizeof(PlayerState) * curve::kMaxPlayers, wgpu::BufferUsage::Storage);
+    gGameStateBuffer = CreateBuffer(sizeof(GameState), wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopySrc);
+    gGameStateReadbackBuffer = CreateBuffer(sizeof(GameState), wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead);
     gOccupancyBuffer = CreateBuffer(kCells * sizeof(uint32_t), wgpu::BufferUsage::Storage);
     gImageBuffer = CreateBuffer(kImageBytes, wgpu::BufferUsage::Storage);
 
     wgpu::ShaderModule computeModule = curve::CreateShaderModule(gDevice, curve::shaders::kInteractiveCompute);
     wgpu::BindGroupLayout computeLayout = CreateComputeBindGroupLayout();
     {
-        std::array<wgpu::BindGroupEntry, 4> entries{};
+        std::array<wgpu::BindGroupEntry, 5> entries{};
         entries[0].binding = 0;
         entries[0].buffer = gParamsBuffer;
         entries[0].size = sizeof(Params);
@@ -101,6 +139,9 @@ void CreateBindGroupsAndPipelines() {
         entries[3].binding = 3;
         entries[3].buffer = gImageBuffer;
         entries[3].size = kImageBytes;
+        entries[4].binding = 4;
+        entries[4].buffer = gGameStateBuffer;
+        entries[4].size = sizeof(GameState);
         wgpu::BindGroupDescriptor desc;
         desc.layout = computeLayout;
         desc.entryCount = entries.size();
@@ -202,6 +243,9 @@ void Frame() {
     };
     gResetQueued = false;
     gQueue.WriteBuffer(gParamsBuffer, 0, &params, sizeof(params));
+    if (params.reset != 0u) {
+        PublishGameState(GameState{0u, 0u, 0u, 0u});
+    }
 
     wgpu::SurfaceTexture surfaceTexture;
     gSurface.GetCurrentTexture(&surfaceTexture);
@@ -210,6 +254,7 @@ void Frame() {
         return;
     }
 
+    const bool readGameState = !gGameStateReadbackPending;
     wgpu::CommandEncoder encoder = gDevice.CreateCommandEncoder();
     {
         wgpu::ComputePassEncoder pass = encoder.BeginComputePass();
@@ -217,6 +262,9 @@ void Frame() {
         pass.SetBindGroup(0, gComputeBindGroup);
         pass.DispatchWorkgroups(1);
         pass.End();
+    }
+    if (readGameState) {
+        encoder.CopyBufferToBuffer(gGameStateBuffer, 0, gGameStateReadbackBuffer, 0, sizeof(GameState));
     }
     {
         wgpu::RenderPassColorAttachment attachment;
@@ -238,6 +286,9 @@ void Frame() {
 
     wgpu::CommandBuffer commands = encoder.Finish();
     gQueue.Submit(1, &commands);
+    if (readGameState) {
+        QueueGameStateReadback();
+    }
 }
 
 void Start() {

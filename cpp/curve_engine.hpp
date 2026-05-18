@@ -34,6 +34,13 @@ struct InteractiveParams {
     float radius;
 };
 
+struct GameState {
+    uint32_t roundOver;
+    uint32_t winner;
+    uint32_t pad0;
+    uint32_t pad1;
+};
+
 struct NativeDemoParams {
     uint32_t frame;
     uint32_t width;
@@ -60,6 +67,7 @@ struct BatchParams {
 
 static_assert(sizeof(PlayerState) == 32);
 static_assert(sizeof(InteractiveParams) == 32);
+static_assert(sizeof(GameState) == 16);
 static_assert(sizeof(NativeDemoParams) == 32);
 static_assert(sizeof(BatchParams) == 40);
 
