@@ -36,6 +36,7 @@ wgpu::ComputePipeline gComputePipeline;
 wgpu::RenderPipeline gRenderPipeline;
 
 uint32_t gFrame = 0;
+uint32_t gResetSeed = 0;
 int32_t gAction = 0;
 bool gResetQueued = true;
 bool gReady = false;
@@ -45,6 +46,14 @@ uint32_t gLastWinner = 0;
 
 wgpu::Buffer CreateBuffer(uint64_t size, wgpu::BufferUsage usage) {
     return curve::CreateBuffer(gDevice, size, usage);
+}
+
+uint32_t MakeResetSeed() {
+    const uint32_t jsSeed = static_cast<uint32_t>(EM_ASM_INT({
+      return (Math.random() * 4294967296) >>> 0;
+    }));
+    const uint32_t seed = jsSeed ^ (gFrame * 0x9e3779b9u) ^ 0xa511e9b3u;
+    return seed == 0u ? 1u : seed;
 }
 
 void PublishGameState(const GameState& state) {
@@ -237,9 +246,13 @@ void Frame() {
         kHeight,
         gAction,
         gResetQueued ? 1u : 0u,
+        gResetSeed,
         1.05f,
         0.069f,
         2.0f,
+        0u,
+        0u,
+        0u,
     };
     gResetQueued = false;
     gQueue.WriteBuffer(gParamsBuffer, 0, &params, sizeof(params));
@@ -295,6 +308,7 @@ void Start() {
     gQueue = gDevice.GetQueue();
     ConfigureSurface();
     CreateBindGroupsAndPipelines();
+    gResetSeed = MakeResetSeed();
     gReady = true;
     EM_ASM({
       if (globalThis.curveFeverReady) globalThis.curveFeverReady();
@@ -354,6 +368,7 @@ EMSCRIPTEN_KEEPALIVE void curve_set_turn(int turn) {
 }
 
 EMSCRIPTEN_KEEPALIVE void curve_reset_game() {
+    gResetSeed = MakeResetSeed();
     gResetQueued = true;
 }
 

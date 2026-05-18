@@ -27,9 +27,13 @@ struct Params {
   height: u32,
   action: i32,
   reset: u32,
+  reset_seed: u32,
   speed: f32,
   turn_rate: f32,
   radius: f32,
+  pad0: u32,
+  pad1: u32,
+  pad2: u32,
 };
 
 struct PlayerState {
@@ -98,19 +102,40 @@ fn direction(heading: f32) -> vec2<f32> {
   return vec2<f32>(cos(heading), sin(heading));
 }
 
+fn hash32(x0: u32) -> u32 {
+  var x = x0;
+  x = (x ^ (x >> 16u)) * 0x7feb352du;
+  x = (x ^ (x >> 15u)) * 0x846ca68bu;
+  return x ^ (x >> 16u);
+}
+
+fn random01(seed: u32, stream: u32) -> f32 {
+  let h = hash32(seed ^ (stream * 0x9e3779b9u));
+  return f32(h & 0x00ffffffu) * (1.0 / 16777216.0);
+}
+
 fn fragment_index(player: u32, fragment: u32) -> u32 {
   return player * MAX_FRAGMENTS + fragment;
 }
 
 fn reset_player(player: u32) {
-  var start = vec2<f32>(f32(params.width) * 0.30, f32(params.height) * 0.54);
-  var heading = -0.10;
-  var color = 0xffffdc3cu;
-  if (player == 1u) {
-    start = vec2<f32>(f32(params.width) * 0.70, f32(params.height) * 0.46);
-    heading = PI + 0.10;
-    color = 0xffff5c9fu;
-  }
+  let seed = select(0x6d2b79f5u, params.reset_seed, params.reset_seed != 0u);
+  let arena = vec2<f32>(f32(params.width), f32(params.height));
+  let center = arena * 0.5;
+  let margin = max(56.0, params.radius * 10.0 + params.speed * 16.0);
+  let axis_angle = random01(seed, 11u) * 2.0 * PI - PI;
+  let axis = direction(axis_angle);
+  let max_half_x = (arena.x * 0.5 - margin) / max(abs(axis.x), 0.001);
+  let max_half_y = (arena.y * 0.5 - margin) / max(abs(axis.y), 0.001);
+  let max_half = max(72.0, min(max_half_x, max_half_y) - 10.0);
+  let half_sep = min(92.0 + random01(seed, 12u) * 54.0, max_half);
+  let side = select(-1.0, 1.0, player == 1u);
+  let start = center + axis * side * half_sep;
+  let jitter = (random01(seed, 13u) * 2.0 - 1.0) * 0.65;
+  let toward_center = select(axis_angle, axis_angle + PI, player == 1u);
+  let mirrored_jitter = select(jitter, -jitter, player == 1u);
+  let heading = wrap_angle(toward_center + mirrored_jitter);
+  let color = select(0xffffdc3cu, 0xffff5c9fu, player == 1u);
   players[player].pos = start;
   players[player].prev_pos = start;
   players[player].heading = heading;
@@ -416,9 +441,13 @@ struct Uniforms {
   height: u32,
   action: i32,
   reset: u32,
+  reset_seed: u32,
   speed: f32,
   turn_rate: f32,
   radius: f32,
+  pad0: u32,
+  pad1: u32,
+  pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> params: Uniforms;

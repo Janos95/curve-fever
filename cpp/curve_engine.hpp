@@ -29,9 +29,13 @@ struct InteractiveParams {
     uint32_t height;
     int32_t action;
     uint32_t reset;
+    uint32_t resetSeed;
     float speed;
     float turnRate;
     float radius;
+    uint32_t pad0;
+    uint32_t pad1;
+    uint32_t pad2;
 };
 
 struct GameState {
@@ -66,7 +70,7 @@ struct BatchParams {
 };
 
 static_assert(sizeof(PlayerState) == 32);
-static_assert(sizeof(InteractiveParams) == 32);
+static_assert(sizeof(InteractiveParams) == 48);
 static_assert(sizeof(GameState) == 16);
 static_assert(sizeof(NativeDemoParams) == 32);
 static_assert(sizeof(BatchParams) == 40);
