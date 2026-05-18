@@ -81,7 +81,7 @@ wgpu::BindGroupLayout CreateRenderBindGroupLayout() {
 
 void CreateBindGroupsAndPipelines() {
     gParamsBuffer = CreateBuffer(sizeof(Params), wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst);
-    gPlayerBuffer = CreateBuffer(sizeof(PlayerState), wgpu::BufferUsage::Storage);
+    gPlayerBuffer = CreateBuffer(sizeof(PlayerState) * curve::kMaxPlayers, wgpu::BufferUsage::Storage);
     gOccupancyBuffer = CreateBuffer(kCells * sizeof(uint32_t), wgpu::BufferUsage::Storage);
     gImageBuffer = CreateBuffer(kImageBytes, wgpu::BufferUsage::Storage);
 
@@ -94,7 +94,7 @@ void CreateBindGroupsAndPipelines() {
         entries[0].size = sizeof(Params);
         entries[1].binding = 1;
         entries[1].buffer = gPlayerBuffer;
-        entries[1].size = sizeof(PlayerState);
+        entries[1].size = sizeof(PlayerState) * curve::kMaxPlayers;
         entries[2].binding = 2;
         entries[2].buffer = gOccupancyBuffer;
         entries[2].size = kCells * sizeof(uint32_t);

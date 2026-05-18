@@ -3,6 +3,7 @@
 namespace curve::shaders {
 
 inline constexpr char kInteractiveCompute[] = R"wgsl(
+const MAX_PLAYERS: u32 = 2u;
 const WORKGROUP_SIZE: u32 = 256u;
 const SEGMENT_SAMPLES: u32 = 18u;
 const RADIUS_CELLS: i32 = 2i;
@@ -11,10 +12,14 @@ const PIXELS_PER_SAMPLE: u32 = DISK_DIAM * DISK_DIAM;
 const MAX_FRAGMENTS: u32 = SEGMENT_SAMPLES * PIXELS_PER_SAMPLE;
 const INVALID_CELL: u32 = 0xffffffffu;
 const SELF_GRACE_FRAMES: u32 = 10u;
+const BOT_LOOKAHEAD_STEPS: u32 = 34u;
+const BOT_SENSOR_STEPS: u32 = 70u;
+const BOT_SENSOR_STEP: f32 = 3.0;
 const PI: f32 = 3.141592653589793;
 const BG: u32 = 0xff12100cu;
 const WALL: u32 = 0xff5b5045u;
-const DEAD_COLOR: u32 = 0xff3d3068u;
+const HUMAN_DEAD: u32 = 0xff3d3068u;
+const BOT_DEAD: u32 = 0xff30544au;
 
 struct Params {
   frame: u32,
@@ -37,16 +42,17 @@ struct PlayerState {
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage, read_write> player: PlayerState;
+@group(0) @binding(1) var<storage, read_write> players: array<PlayerState>;
 @group(0) @binding(2) var<storage, read_write> occupancy: array<u32>;
 @group(0) @binding(3) var<storage, read_write> image: array<u32>;
 
-var<workgroup> next_pos: vec2<f32>;
-var<workgroup> next_heading: f32;
-var<workgroup> was_alive: u32;
-var<workgroup> dead: atomic<u32>;
-var<workgroup> touched_cell: array<u32, MAX_FRAGMENTS>;
-var<workgroup> touched_time: array<u32, MAX_FRAGMENTS>;
+var<workgroup> next_pos: array<vec2<f32>, MAX_PLAYERS>;
+var<workgroup> next_heading: array<f32, MAX_PLAYERS>;
+var<workgroup> chosen_action: array<i32, MAX_PLAYERS>;
+var<workgroup> was_alive: array<u32, MAX_PLAYERS>;
+var<workgroup> dead: array<atomic<u32>, MAX_PLAYERS>;
+var<workgroup> touched_cell: array<u32, MAX_PLAYERS * MAX_FRAGMENTS>;
+var<workgroup> touched_time: array<u32, MAX_PLAYERS * MAX_FRAGMENTS>;
 
 fn cell(x: u32, y: u32) -> u32 {
   return y * params.width + x;
@@ -60,8 +66,8 @@ fn in_bounds(x: i32, y: i32) -> bool {
   return x >= 0i && y >= 0i && x < i32(params.width) && y < i32(params.height);
 }
 
-fn own_recent(token: u32) -> bool {
-  if ((token & 255u) != 1u) {
+fn own_recent(token: u32, player: u32) -> bool {
+  if ((token & 255u) != player + 1u) {
     return false;
   }
   let trail_frame = token >> 8u;
@@ -79,26 +85,142 @@ fn wrap_angle(a0: f32) -> f32 {
   return a;
 }
 
-fn reset_player() {
-  let start = vec2<f32>(f32(params.width) * 0.5, f32(params.height) * 0.5);
-  player.pos = start;
-  player.prev_pos = start;
-  player.heading = -0.35;
-  player.alive = 1u;
-  player.color = 0xffffdc3cu;
-  player.pad = 0u;
+fn direction(heading: f32) -> vec2<f32> {
+  return vec2<f32>(cos(heading), sin(heading));
 }
 
-fn compute_fragment(fragment: u32) {
+fn fragment_index(player: u32, fragment: u32) -> u32 {
+  return player * MAX_FRAGMENTS + fragment;
+}
+
+fn reset_player(player: u32) {
+  var start = vec2<f32>(f32(params.width) * 0.30, f32(params.height) * 0.54);
+  var heading = -0.10;
+  var color = 0xffffdc3cu;
+  if (player == 1u) {
+    start = vec2<f32>(f32(params.width) * 0.70, f32(params.height) * 0.46);
+    heading = PI + 0.10;
+    color = 0xffff5c9fu;
+  }
+  players[player].pos = start;
+  players[player].prev_pos = start;
+  players[player].heading = heading;
+  players[player].alive = 1u;
+  players[player].color = color;
+  players[player].pad = 1u;
+}
+
+fn blocked_disk(pos: vec2<f32>, player: u32) -> bool {
+  let cx = i32(floor(pos.x));
+  let cy = i32(floor(pos.y));
+
+  for (var oy = -RADIUS_CELLS; oy <= RADIUS_CELLS; oy = oy + 1i) {
+    for (var ox = -RADIUS_CELLS; ox <= RADIUS_CELLS; ox = ox + 1i) {
+      let r2 = f32(ox * ox + oy * oy);
+      if (r2 > params.radius * params.radius + 0.25) {
+        continue;
+      }
+
+      let x = cx + ox;
+      let y = cy + oy;
+      if (!in_bounds(x, y)) {
+        return true;
+      }
+
+      let token = occupancy[flatten_cell(x, y)];
+      if (token != 0u && !own_recent(token, player)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+fn ray_clearance(pos: vec2<f32>, heading: f32, player: u32) -> f32 {
+  let dir = direction(heading);
+  var probe = pos;
+  for (var i = 0u; i < BOT_SENSOR_STEPS; i = i + 1u) {
+    probe = probe + dir * BOT_SENSOR_STEP;
+    if (blocked_disk(probe, player)) {
+      return f32(i);
+    }
+  }
+  return f32(BOT_SENSOR_STEPS);
+}
+
+fn rollout_clearance(player: u32, action: i32) -> f32 {
+  var pos = players[player].pos;
+  var heading = players[player].heading;
+  var survived = 0.0;
+  for (var i = 0u; i < BOT_LOOKAHEAD_STEPS; i = i + 1u) {
+    if (i < 9u) {
+      heading = wrap_angle(heading + f32(action) * params.turn_rate);
+    }
+    pos = pos + direction(heading) * params.speed;
+    if (blocked_disk(pos, player)) {
+      return survived;
+    }
+    survived = survived + 1.0;
+  }
+  return survived;
+}
+
+fn bot_candidate_score(player: u32, action: i32) -> f32 {
+  let heading = wrap_angle(players[player].heading + f32(action) * params.turn_rate);
+  let pos = players[player].pos + direction(heading) * params.speed;
+  if (blocked_disk(pos, player)) {
+    return -10000.0;
+  }
+
+  let survival = rollout_clearance(player, action);
+  let open =
+    ray_clearance(pos, heading, player) * 1.15 +
+    ray_clearance(pos, wrap_angle(heading - 0.45), player) * 0.85 +
+    ray_clearance(pos, wrap_angle(heading + 0.45), player) * 0.85 +
+    ray_clearance(pos, wrap_angle(heading - 0.90), player) * 0.42 +
+    ray_clearance(pos, wrap_angle(heading + 0.90), player) * 0.42;
+
+  let edge_margin = min(min(pos.x, f32(params.width) - pos.x), min(pos.y, f32(params.height) - pos.y));
+  let edge_bonus = min(edge_margin, 96.0) * 0.07;
+
+  let to_human = players[0].pos - pos;
+  let target_heading = atan2(to_human.y, to_human.x);
+  let target_alignment = 1.0 - min(abs(wrap_angle(target_heading - heading)) / PI, 1.0);
+  let attack_bonus = target_alignment * 4.0;
+
+  let previous_action = i32(players[player].pad) - 1i;
+  let smooth_bonus = select(0.0, 3.5, previous_action == action);
+  let turn_cost = select(0.35, 0.0, action == 0i);
+
+  return survival * 7.0 + open + edge_bonus + attack_bonus + smooth_bonus - turn_cost;
+}
+
+fn bot_action(player: u32) -> i32 {
+  var best_action = 0i;
+  var best_score = -1000000.0;
+  for (var i = 0u; i < 3u; i = i + 1u) {
+    let action = i32(i) - 1i;
+    let score = bot_candidate_score(player, action);
+    if (score > best_score) {
+      best_score = score;
+      best_action = action;
+    }
+  }
+  return best_action;
+}
+
+fn compute_fragment(player: u32, fragment: u32) {
   let sample_id = fragment / PIXELS_PER_SAMPLE;
   let pixel_id = fragment % PIXELS_PER_SAMPLE;
   let ox = i32(pixel_id % DISK_DIAM) - RADIUS_CELLS;
   let oy = i32(pixel_id / DISK_DIAM) - RADIUS_CELLS;
+  let idx = fragment_index(player, fragment);
 
-  touched_cell[fragment] = INVALID_CELL;
-  touched_time[fragment] = sample_id + 1u;
+  touched_cell[idx] = INVALID_CELL;
+  touched_time[idx] = sample_id + 1u;
 
-  if (was_alive == 0u) {
+  if (was_alive[player] == 0u) {
     return;
   }
 
@@ -108,16 +230,16 @@ fn compute_fragment(fragment: u32) {
   }
 
   let t = f32(sample_id + 1u) / f32(SEGMENT_SAMPLES);
-  let center = player.pos + (next_pos - player.pos) * t;
+  let center = players[player].pos + (next_pos[player] - players[player].pos) * t;
   let x = i32(floor(center.x)) + ox;
   let y = i32(floor(center.y)) + oy;
 
   if (!in_bounds(x, y)) {
-    atomicStore(&dead, 1u);
+    atomicStore(&dead[player], 1u);
     return;
   }
 
-  touched_cell[fragment] = flatten_cell(x, y);
+  touched_cell[idx] = flatten_cell(x, y);
 }
 
 @compute @workgroup_size(256)
@@ -140,67 +262,100 @@ fn step_env(@builtin(local_invocation_id) lid3: vec3<u32>) {
   storageBarrier();
   workgroupBarrier();
 
-  if (lane == 0u) {
+  if (lane < MAX_PLAYERS) {
     if (params.reset != 0u) {
-      reset_player();
+      reset_player(lane);
     }
+  }
 
-    was_alive = player.alive;
-    atomicStore(&dead, 0u);
+  storageBarrier();
+  workgroupBarrier();
 
-    var heading = player.heading;
-    if (params.action < 0i) {
+  if (lane < MAX_PLAYERS) {
+    let p = lane;
+    was_alive[p] = players[p].alive;
+    atomicStore(&dead[p], 0u);
+
+    var action = 0i;
+    if (p == 0u) {
+      action = params.action;
+    } else if (players[p].alive != 0u) {
+      action = bot_action(p);
+    }
+    chosen_action[p] = action;
+
+    var heading = players[p].heading;
+    if (action < 0i) {
       heading = heading - params.turn_rate;
-    } else if (params.action > 0i) {
+    } else if (action > 0i) {
       heading = heading + params.turn_rate;
     }
     heading = wrap_angle(heading);
-    next_heading = heading;
-    next_pos = player.pos + vec2<f32>(cos(heading), sin(heading)) * params.speed;
+    next_heading[p] = heading;
+    next_pos[p] = players[p].pos + direction(heading) * params.speed;
   }
 
   workgroupBarrier();
 
-  for (var i = lane; i < MAX_FRAGMENTS; i = i + WORKGROUP_SIZE) {
-    compute_fragment(i);
+  for (var i = lane; i < MAX_PLAYERS * MAX_FRAGMENTS; i = i + WORKGROUP_SIZE) {
+    compute_fragment(i / MAX_FRAGMENTS, i % MAX_FRAGMENTS);
   }
 
   workgroupBarrier();
 
-  for (var i = lane; i < MAX_FRAGMENTS; i = i + WORKGROUP_SIZE) {
+  for (var i = lane; i < MAX_PLAYERS * MAX_FRAGMENTS; i = i + WORKGROUP_SIZE) {
+    let p = i / MAX_FRAGMENTS;
     let c = touched_cell[i];
-    if (c == INVALID_CELL || was_alive == 0u) {
+    if (c == INVALID_CELL || was_alive[p] == 0u) {
       continue;
     }
     let old = occupancy[c];
-    if (old != 0u && !own_recent(old)) {
-      atomicStore(&dead, 1u);
+    if (old != 0u && !own_recent(old, p)) {
+      atomicStore(&dead[p], 1u);
+    }
+
+    let my_time = touched_time[i];
+    for (var q = 0u; q < MAX_PLAYERS; q = q + 1u) {
+      if (q == p || was_alive[q] == 0u) {
+        continue;
+      }
+      for (var other_fragment = 0u; other_fragment < MAX_FRAGMENTS; other_fragment = other_fragment + 1u) {
+        let other_idx = fragment_index(q, other_fragment);
+        if (touched_cell[other_idx] == c) {
+          let other_time = touched_time[other_idx];
+          if (other_time <= my_time) {
+            atomicStore(&dead[p], 1u);
+          }
+        }
+      }
     }
   }
 
   workgroupBarrier();
 
-  for (var i = lane; i < MAX_FRAGMENTS; i = i + WORKGROUP_SIZE) {
+  for (var i = lane; i < MAX_PLAYERS * MAX_FRAGMENTS; i = i + WORKGROUP_SIZE) {
+    let p = i / MAX_FRAGMENTS;
     let c = touched_cell[i];
-    if (c != INVALID_CELL && was_alive != 0u && atomicLoad(&dead) == 0u) {
-      occupancy[c] = (params.frame << 8u) | 1u;
-      image[c] = player.color;
+    if (c != INVALID_CELL && was_alive[p] != 0u && atomicLoad(&dead[p]) == 0u) {
+      occupancy[c] = (params.frame << 8u) | (p + 1u);
+      image[c] = players[p].color;
     }
   }
 
   workgroupBarrier();
 
-  if (lane == 0u && was_alive != 0u) {
-    if (atomicLoad(&dead) == 0u) {
-      player.prev_pos = player.pos;
-      player.pos = next_pos;
-      player.heading = next_heading;
-      player.alive = 1u;
+  if (lane < MAX_PLAYERS && was_alive[lane] != 0u) {
+    if (atomicLoad(&dead[lane]) == 0u) {
+      players[lane].prev_pos = players[lane].pos;
+      players[lane].pos = next_pos[lane];
+      players[lane].heading = next_heading[lane];
+      players[lane].alive = 1u;
+      players[lane].pad = u32(chosen_action[lane] + 1i);
     } else {
-      player.alive = 0u;
-      let x = clamp(i32(player.pos.x), 0i, i32(params.width) - 1i);
-      let y = clamp(i32(player.pos.y), 0i, i32(params.height) - 1i);
-      image[flatten_cell(x, y)] = DEAD_COLOR;
+      players[lane].alive = 0u;
+      let x = clamp(i32(players[lane].pos.x), 0i, i32(params.width) - 1i);
+      let y = clamp(i32(players[lane].pos.y), 0i, i32(params.height) - 1i);
+      image[flatten_cell(x, y)] = select(HUMAN_DEAD, BOT_DEAD, lane == 1u);
     }
   }
 }
